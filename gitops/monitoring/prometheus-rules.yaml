@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules
+  namespace: monitoring
+data:
+  # ── 기본(부실한) 알림 — 인프라 레벨만 감지. RED/USE 는 보지 못한다. ──
+  # (이게 바로 "이번 장애가 조기에 잡히지 않은 이유"의 일부다. Task 4 에서 보강한다.)
+  rules-starter.yml: |
+    groups:
+      - name: starter
+        rules:
+          - alert: TargetDown
+            expr: up == 0
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "스크레이프 타깃 다운: {{ $labels.job }} / {{ $labels.instance }}"
+          - alert: KubePodCrashLooping
+            expr: increase(kube_pod_container_status_restarts_total[10m]) > 3
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Pod 재시작 반복: {{ $labels.namespace }}/{{ $labels.pod }}"
+
+  # ── Task 4 작업 영역 ──
+  # 아래 파일에 RED/USE 기반 알림 룰을 직접 작성하라.
+  # 작성 후보(원인 스포일러 방지를 위해 expr 는 비워둠):
+  #   - RED(errors)   : checkout 에러율 급증
+  #   - RED(duration) : checkout/payment p99 지연 SLO 위반
+  #   - USE(saturation): 컨테이너 CPU 스로틀링 / 메모리 limit 근접
+  # 정답 예시 룰은 solutions/README.md 참고.
+  rules-task4.yml: |
+    groups: []

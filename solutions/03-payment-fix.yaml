@@ -1,0 +1,28 @@
+# =====================================================================
+# [정답/모델답안] Task 3 완화 ①: payment CPU limit 상향
+#
+# 근본 원인 F2 — payment 의 limits.cpu 가 150m 으로 너무 낮아
+# 부하 시 CFS 스로틀링이 발생, /pay 응답이 초 단위로 느려진다.
+# 이 지연이 checkout 의 1초 타임아웃을 넘겨 504 폭증(F3)으로 이어진다.
+#
+# ── 적용(빠른 완화, strategic-merge patch) ──
+#   kubectl -n checkout patch deploy payment --patch-file solutions/03-payment-fix.yaml
+#
+# ── 영구 수정(권장, GitOps) ──
+#   gitops/apps/payment.yaml 의 resources 를 아래 값으로 바꾸고
+#   kubectl apply -k gitops/  로 재적용한다. (그래야 다음 up.sh 에도 유지)
+#
+# verify.sh 는 payment limits.cpu > 150m 이면 PASS.
+# =====================================================================
+spec:
+  template:
+    spec:
+      containers:
+        - name: payment
+          resources:
+            requests:
+              cpu: "300m"
+              memory: "64Mi"
+            limits:
+              cpu: "1000m"
+              memory: "256Mi"

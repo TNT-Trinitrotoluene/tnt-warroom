@@ -1,0 +1,58 @@
+# =====================================================================
+# [정답/모델답안] Task 3 완화 ②: HPA 추가 (checkout + payment)
+#
+# 근본 원인 F1 — 두 서비스 모두 replicas 가 2로 고정되어 있고 HPA 가 없다.
+# 트래픽이 늘어도 자동 확장이 되지 않아 단위 파드가 포화된다.
+#
+# ⚠️ HPA 는 metrics-server 가 있어야 동작한다. GKE 는 metrics-server 가
+#    기본 설치되어 있으므로 그대로 동작한다. (확인: kubectl top pods -n checkout)
+#
+# ── 적용 ──
+#   kubectl apply -f solutions/03-hpa.yaml
+#   kubectl -n checkout get hpa -w        # TARGETS/REPLICAS 변화 관찰
+#
+# 주의: payment 의 CPU limit(F2)을 먼저 올리지 않으면, payment 는
+# 스로틀링으로 CPU 사용률이 limit 대비 높게 잡혀 엉뚱하게 스케일된다.
+# → 03-payment-fix.yaml 을 먼저 적용한 뒤 HPA 를 붙이는 순서가 옳다.
+#
+# verify.sh 는 checkout 에 HPA 가 있으면(또는 replicas>2) PASS.
+# =====================================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: checkout
+  namespace: checkout
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: checkout
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: payment
+  namespace: checkout
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: payment
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

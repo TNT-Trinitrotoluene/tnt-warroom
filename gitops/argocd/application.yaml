@@ -1,0 +1,22 @@
+# (옵션) ArgoCD GitOps Application.
+# up.sh --with-argocd 실행 시, .env 의 GITOPS_REPO_* 값을 envsubst 로 치환해 적용한다.
+# 핵심 랩은 ArgoCD 없이도 동작한다 (up.sh 가 kubectl apply -k 로 동일하게 배포).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tnt-sre-warroom
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: "${GITOPS_REPO_URL}"
+    targetRevision: "${GITOPS_REPO_REVISION}"
+    path: "${GITOPS_REPO_PATH}"
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

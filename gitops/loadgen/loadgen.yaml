@@ -1,0 +1,101 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loadgen-src
+  namespace: loadgen
+data:
+  app.py: |
+    import os, time, threading, urllib.request
+
+    TARGET = os.environ.get("TARGET_URL", "http://checkout.checkout.svc.cluster.local:8080/checkout")
+    CONC = int(os.environ.get("CONCURRENCY", "80"))
+    TIMEOUT = float(os.environ.get("TIMEOUT", "5.0"))
+
+    _lock = threading.Lock()
+    ok = 0
+    err = 0
+    lat_sum = 0.0
+    n = 0
+
+    def worker():
+        global ok, err, lat_sum, n
+        while True:
+            t0 = time.time()
+            good = False
+            try:
+                with urllib.request.urlopen(TARGET, timeout=TIMEOUT) as r:
+                    r.read()
+                good = True
+            except Exception:
+                good = False
+            d = time.time() - t0
+            with _lock:
+                n += 1
+                lat_sum += d
+                if good:
+                    ok += 1
+                else:
+                    err += 1
+
+    def reporter():
+        global ok, err, lat_sum, n
+        while True:
+            time.sleep(5)
+            with _lock:
+                tot = n
+                avg = (lat_sum / n) if n else 0.0
+                pct = (err * 100.0 / n) if n else 0.0
+                print("[5s] req=%d ok=%d err=%d err%%=%.1f avg_ms=%.0f" % (tot, ok, err, pct, avg * 1000), flush=True)
+                ok = 0
+                err = 0
+                n = 0
+                lat_sum = 0.0
+
+    if __name__ == "__main__":
+        print("loadgen -> %s concurrency=%d" % (TARGET, CONC), flush=True)
+        threading.Thread(target=reporter, daemon=True).start()
+        for _ in range(CONC):
+            threading.Thread(target=worker, daemon=True).start()
+        while True:
+            time.sleep(3600)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+  namespace: loadgen
+  labels:
+    app: loadgen
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loadgen
+  template:
+    metadata:
+      labels:
+        app: loadgen
+    spec:
+      containers:
+        - name: loadgen
+          image: python:3.12-slim
+          command: ["python", "/app/app.py"]
+          env:
+            - name: TARGET_URL
+              value: "http://checkout.checkout.svc.cluster.local:8080/checkout"
+            - name: CONCURRENCY
+              value: "80"            # ≈ 베이스라인의 3배 부하 (값을 줄이면 부하 완화)
+          resources:
+            requests:
+              cpu: "150m"
+              memory: "64Mi"
+            limits:
+              cpu: "1000m"
+              memory: "128Mi"
+          volumeMounts:
+            - name: src
+              mountPath: /app
+      volumes:
+        - name: src
+          configMap:
+            name: loadgen-src

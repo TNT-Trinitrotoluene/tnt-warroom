@@ -1,0 +1,165 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: payment-src
+  namespace: checkout
+data:
+  app.py: |
+    import os, time, hashlib, threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    PORT = int(os.environ.get("PORT", "8080"))
+    CPU_ITERS = int(os.environ.get("CPU_ITERS", "70000"))   # /pay 1회당 CPU 작업량
+    NAME = os.environ.get("APP_NAME", "payment")
+
+    _lock = threading.Lock()
+    _counts = {}
+    BUCKETS = [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+    _hist = {}
+
+    def _obs(path, code, dur):
+        with _lock:
+            k = (path, str(code))
+            _counts[k] = _counts.get(k, 0) + 1
+            h = _hist.get(path)
+            if h is None:
+                h = {"buckets": [0] * len(BUCKETS), "sum": 0.0, "count": 0}
+                _hist[path] = h
+            h["sum"] += dur
+            h["count"] += 1
+            for i, b in enumerate(BUCKETS):
+                if dur <= b:
+                    h["buckets"][i] += 1
+
+    def _burn(iters):
+        x = b"seed"
+        for _ in range(iters):
+            x = hashlib.sha256(x).digest()
+        return x
+
+    def _metrics_text():
+        out = ["# TYPE http_requests_total counter"]
+        with _lock:
+            for (path, code), v in _counts.items():
+                out.append('http_requests_total{app="%s",path="%s",code="%s"} %d' % (NAME, path, code, v))
+            out.append("# TYPE http_request_duration_seconds histogram")
+            for path, h in _hist.items():
+                cum = 0
+                for i, b in enumerate(BUCKETS):
+                    cum += h["buckets"][i]
+                    out.append('http_request_duration_seconds_bucket{app="%s",path="%s",le="%s"} %d' % (NAME, path, b, cum))
+                out.append('http_request_duration_seconds_bucket{app="%s",path="%s",le="+Inf"} %d' % (NAME, path, h["count"]))
+                out.append('http_request_duration_seconds_sum{app="%s",path="%s"} %f' % (NAME, path, h["sum"]))
+                out.append('http_request_duration_seconds_count{app="%s",path="%s"} %d' % (NAME, path, h["count"]))
+        return "\n".join(out) + "\n"
+
+    class H(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        def log_message(self, *a):
+            pass
+        def _send(self, code, body, ctype="application/json"):
+            b = body.encode() if isinstance(body, str) else body
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            try:
+                self.wfile.write(b)
+            except Exception:
+                pass
+        def do_GET(self):
+            path = self.path.split("?", 1)[0]
+            if path == "/healthz":
+                self._send(200, '{"status":"ok"}'); return
+            if path == "/metrics":
+                self._send(200, _metrics_text(), "text/plain; version=0.0.4"); return
+            if path == "/pay":
+                t0 = time.time()
+                _burn(CPU_ITERS)
+                _obs("/pay", 200, time.time() - t0)
+                self._send(200, '{"status":"paid"}'); return
+            self._send(404, '{"error":"not found"}')
+
+    if __name__ == "__main__":
+        srv = ThreadingHTTPServer(("0.0.0.0", PORT), H)
+        print("%s listening on :%d (CPU_ITERS=%d)" % (NAME, PORT, CPU_ITERS), flush=True)
+        srv.serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment
+  namespace: checkout
+  labels:
+    app: payment
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: payment
+  template:
+    metadata:
+      labels:
+        app: payment
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: payment
+          image: python:3.12-slim
+          command: ["python", "/app/app.py"]
+          env:
+            - name: APP_NAME
+              value: "payment"
+            - name: CPU_ITERS
+              value: "70000"
+          ports:
+            - containerPort: 8080
+          # ⚠️ 결함 후보 영역 — 함부로 정답을 적지 말 것. (해설은 solutions/ 참고)
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "150m"
+              memory: "128Mi"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          volumeMounts:
+            - name: src
+              mountPath: /app
+      volumes:
+        - name: src
+          configMap:
+            name: payment-src
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment
+  namespace: checkout
+  labels:
+    app: payment
+spec:
+  selector:
+    app: payment
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

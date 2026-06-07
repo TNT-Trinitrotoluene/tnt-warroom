@@ -1,0 +1,149 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: slack-relay-src
+  namespace: monitoring
+data:
+  relay.py: |
+    import os, json, urllib.request
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from urllib.parse import urlparse, parse_qs
+
+    PORT = int(os.environ.get("PORT", "8080"))
+    # 채널별 Slack Incoming Webhook URL (.env → Secret 'slack-webhooks' 로 주입)
+    CH = {
+        "critical": os.environ.get("SLACK_WEBHOOK_ALERTS_CRITICAL", ""),
+        "warroom":  os.environ.get("SLACK_WEBHOOK_INCIDENT_WAR_ROOM", ""),
+        "rfc":      os.environ.get("SLACK_WEBHOOK_ARCHITECTURE_RFC", ""),
+    }
+
+    def build_message(channel, payload):
+        # Alertmanager webhook payload → Slack Block Kit 메시지로 변환
+        status = payload.get("status", "firing")
+        color = "#d00000" if status == "firing" else "#2eb67d"  # firing=빨강, resolved=초록
+        blocks = [{
+            "type": "header",
+            "text": {"type": "plain_text", "text": "TNT 알림 (#%s) — %s" % (channel, status), "emoji": True},
+        }]
+        alerts = payload.get("alerts", []) or []
+        if not alerts:
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "(no alerts)"}})
+        for a in alerts:
+            lab = a.get("labels", {})
+            ann = a.get("annotations", {})
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "*[%s] %s*\n%s" % (
+                    lab.get("severity", "?"), lab.get("alertname", "alert"), ann.get("summary", ""))},
+            })
+        # Slack 은 attachments[].color 로 좌측 색상 막대를 그린다.
+        return {"attachments": [{"color": color, "blocks": blocks}]}
+
+    class H(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        def log_message(self, *a):
+            pass
+        def _send(self, code, msg="ok"):
+            b = msg.encode()
+            self.send_response(code)
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            try:
+                self.wfile.write(b)
+            except Exception:
+                pass
+        def do_GET(self):
+            if self.path.startswith("/healthz"):
+                self._send(200, "ok"); return
+            self._send(404, "nf")
+        def do_POST(self):
+            q = parse_qs(urlparse(self.path).query)
+            channel = q.get("channel", ["warroom"])[0]
+            ln = int(self.headers.get("Content-Length", "0") or 0)
+            raw = self.rfile.read(ln) if ln else b"{}"
+            try:
+                payload = json.loads(raw or b"{}")
+            except Exception:
+                payload = {}
+            url = CH.get(channel, "")
+            if not url:
+                print("[slack-relay] channel=%s webhook 미설정 → 전송 생략" % channel, flush=True)
+                self._send(200, "skipped(no webhook)"); return
+            data = json.dumps(build_message(channel, payload)).encode()
+            req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    print("[slack-relay] channel=%s -> HTTP %s" % (channel, r.status), flush=True)
+                self._send(200, "sent")
+            except Exception as e:
+                print("[slack-relay] channel=%s ERROR %s" % (channel, e), flush=True)
+                self._send(502, "relay error")
+
+    if __name__ == "__main__":
+        print("slack-relay :%d configured=%s" % (PORT, {k: bool(v) for k, v in CH.items()}), flush=True)
+        ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slack-relay
+  namespace: monitoring
+  labels:
+    app: slack-relay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: slack-relay
+  template:
+    metadata:
+      labels:
+        app: slack-relay
+    spec:
+      containers:
+        - name: slack-relay
+          image: python:3.12-slim
+          command: ["python", "/app/relay.py"]
+          # 웹훅 URL 은 up.sh 가 .env 에서 만든 Secret 'slack-webhooks' 에서 주입.
+          # (아직 없으면 optional=true 로 건너뜀 → 파드는 정상 기동, 전송만 생략)
+          envFrom:
+            - secretRef:
+                name: slack-webhooks
+                optional: true
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: "20m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          volumeMounts:
+            - name: src
+              mountPath: /app
+      volumes:
+        - name: src
+          configMap:
+            name: slack-relay-src
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: slack-relay
+  namespace: monitoring
+  labels:
+    app: slack-relay
+spec:
+  selector:
+    app: slack-relay
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

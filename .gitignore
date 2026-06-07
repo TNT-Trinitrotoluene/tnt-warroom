@@ -1,0 +1,19 @@
+# ── 비밀 / 환경 ──
+.env
+*.local
+
+# ── Terraform ──
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+terraform.tfvars
+*.auto.tfvars
+
+# ── 런타임 생성물 ──
+rendered/
+kubeconfig
+*.log

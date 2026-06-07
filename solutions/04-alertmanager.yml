@@ -1,0 +1,49 @@
+# =====================================================================
+# [정답/모델답안] Task 4 ②: Alertmanager 라우팅 → slack-relay → Slack
+#
+# 이 내용을 gitops/monitoring/alertmanager.yaml 의
+#   data.alertmanager.yml  키 값에 통째로 붙여넣는다.
+# 그 다음:
+#   kubectl apply -k gitops/
+#   kubectl -n monitoring rollout restart deploy/alertmanager
+#
+# 전제: up.sh 가 .env 의 Slack 웹훅 3개로 Secret 'slack-webhooks' 를 만들어
+#       slack-relay 에 주입한다. (웹훅 미설정 시 relay 는 전송을 건너뛴다)
+#
+# 수동 점검(웹훅이 실제로 도는지):
+#   kubectl -n monitoring port-forward deploy/slack-relay 8080:8080 &
+#   curl -X POST "localhost:8080/alert?channel=warroom" \
+#     -H 'Content-Type: application/json' \
+#     -d '{"status":"firing","alerts":[{"labels":{"severity":"warning","alertname":"Test"},"annotations":{"summary":"relay 점검"}}]}'
+#
+# verify.sh 는 alertmanager.yml 에 "slack-relay" 문자열이 있으면 PASS.
+#
+# 설계 의도: critical → #alerts-critical(즉시 대응), warning → #incident-war-room
+# (트리아지/공유). send_resolved 로 해소 시점도 채널에 남긴다.
+#
+# 참고(대안): Alertmanager 는 기본 'slack_configs' 리시버로 Slack 에 직접
+# 보낼 수도 있다(릴레이 없이). 이 랩은 메시지 포맷/시크릿 주입을 한곳에서
+# 다루려고 slack-relay 를 두었다. RFC(Task 5)에서 비교 논의해볼 만하다.
+# =====================================================================
+route:
+  receiver: 'default-blackhole'
+  group_by: ['alertname']
+  group_wait: 10s
+  group_interval: 30s
+  repeat_interval: 1h
+  routes:
+    - matchers: ['severity="critical"']
+      receiver: 'slack-critical'
+    - matchers: ['severity="warning"']
+      receiver: 'slack-warroom'
+
+receivers:
+  - name: 'default-blackhole'
+  - name: 'slack-critical'
+    webhook_configs:
+      - url: 'http://slack-relay.monitoring.svc.cluster.local:8080/alert?channel=critical'
+        send_resolved: true
+  - name: 'slack-warroom'
+    webhook_configs:
+      - url: 'http://slack-relay.monitoring.svc.cluster.local:8080/alert?channel=warroom'
+        send_resolved: true

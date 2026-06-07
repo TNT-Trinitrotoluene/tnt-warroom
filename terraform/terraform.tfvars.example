@@ -1,0 +1,15 @@
+# cp terraform.tfvars.example terraform.tfvars 후 필요 시 수정.
+# (up.sh 는 .env 값을 TF_VAR_* 로 주입하므로, 이 파일 없이도 동작한다.)
+
+project_id   = "tih-testproject"
+region       = "asia-northeast3"
+zone         = "asia-northeast3-a"
+cluster_name = "tnt-warroom"
+
+machine_type = "e2-standard-2"
+node_count   = 2
+use_spot     = true
+disk_size_gb = 50
+
+# 서비스계정 키를 쓸 경우에만:
+# gcp_credentials_file = "/abs/path/to/key.json"

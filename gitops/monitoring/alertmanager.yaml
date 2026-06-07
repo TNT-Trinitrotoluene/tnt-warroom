@@ -1,0 +1,102 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: monitoring
+data:
+  alertmanager.yml: |
+    route:
+      receiver: 'default-blackhole'
+      group_by: ['alertname']
+      group_wait: 10s
+      group_interval: 30s
+      repeat_interval: 1h
+      # ── Task 4 작업 영역 ──
+      # severity 라벨에 따라 Slack 채널로 라우팅하도록 routes 를 작성하라.
+      # routes:
+      #   - matchers: ['severity="critical"']
+      #     receiver: 'slack-critical'
+      #   - matchers: ['severity="warning"']
+      #     receiver: 'slack-warroom'
+
+    receivers:
+      - name: 'default-blackhole'
+      # ── Task 4 작업 영역 ──
+      # slack-relay 로 보내는 리시버를 작성하라. 예:
+      # - name: 'slack-critical'
+      #   webhook_configs:
+      #     - url: 'http://slack-relay.monitoring.svc.cluster.local:8080/alert?channel=critical'
+      #       send_resolved: true
+      # - name: 'slack-warroom'
+      #   webhook_configs:
+      #     - url: 'http://slack-relay.monitoring.svc.cluster.local:8080/alert?channel=warroom'
+      #       send_resolved: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: monitoring
+  labels:
+    app: alertmanager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alertmanager
+  template:
+    metadata:
+      labels:
+        app: alertmanager
+    spec:
+      securityContext:
+        runAsUser: 65534
+        runAsNonRoot: true
+        fsGroup: 65534
+      containers:
+        - name: alertmanager
+          image: prom/alertmanager:v0.27.0
+          args:
+            - --config.file=/etc/alertmanager/alertmanager.yml
+            - --storage.path=/alertmanager
+          ports:
+            - containerPort: 9093
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "150m"
+              memory: "128Mi"
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9093
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alertmanager
+            - name: data
+              mountPath: /alertmanager
+      volumes:
+        - name: config
+          configMap:
+            name: alertmanager-config
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: monitoring
+  labels:
+    app: alertmanager
+spec:
+  selector:
+    app: alertmanager
+  ports:
+    - name: http
+      port: 9093
+      targetPort: 9093
